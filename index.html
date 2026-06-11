@@ -909,8 +909,7 @@ function noiseBuf(dur){
   const a=ac(), b=a.createBuffer(1, Math.max(1,a.sampleRate*dur|0), a.sampleRate);
   const d=b.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
-  return
-   b;
+  return b;
 }
 function sfxClick(){
   if(!audioOn) return;
