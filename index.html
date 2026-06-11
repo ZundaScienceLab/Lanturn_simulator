@@ -182,4 +182,834 @@ footer{margin-top:34px;font-size:12px;color:#93b3c4;line-height:1.9;border-top:1
         <div class="power-sub" id="powerSub"></div>
       </div>
 
-   
+      <div class="doom" id="doom">
+        <div class="lv" id="doomLv"></div>
+        <div class="verdict" id="doomV"></div>
+        <div class="detail" id="doomD"></div>
+        <div class="gauge"><i id="gaugeBar"></i></div>
+      </div>
+
+      <div class="compare">
+        <h2>COMPARISON — 換算</h2>
+        <div id="cmp"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  計算モデル: E = I·e<sup>−αr</sup> / r²(拡散光の逆二乗則 × ランベルト・ベールの法則、α=0.018は青色光の海水減衰係数)から必要光度 I を逆算。
+  白色光モードでは青成分のみ伝わるとして I を3倍。全エネルギー P = 4πI / η。
+  地球破壊1回 = 地球の重力束縛エネルギー 2.2×10³²J で換算。<br>
+  このシミュレーターはエンタメです。ランターンはいつも手加減してくれています。感謝。
+</footer>
+</div>
+
+<!-- 神視点モード -->
+<div id="god">
+  <canvas id="godCv" width="1280" height="720"></canvas>
+  <button id="mute" title="効果音 ON/OFF">🔊</button>
+  <div id="godUI">
+    <div id="godVerdict"></div>
+    <div id="godStats"></div>
+    <button id="godBack">← 条件をいじり直す</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* ---------- 物理 ---------- */
+const KTAB=[[400,0.030],[420,0.022],[440,0.019],[470,0.018],[490,0.022],
+            [510,0.036],[530,0.05],[550,0.064],[570,0.09],[590,0.16],
+            [610,0.26],[630,0.30],[650,0.34],[670,0.43],[700,0.65]];
+function kOf(l){
+  for(let i=0;i<KTAB.length-1;i++){
+    const [a,ka]=KTAB[i],[b,kb]=KTAB[i+1];
+    if(l>=a&&l<=b) return ka+(kb-ka)*(l-a)/(b-a);
+  }
+  return l<400?0.03:0.65;
+}
+const LOG10E=Math.log10(Math.E);
+const EARTH_J=Math.log10(2.2)+32;      // 地球破壊1回 [log10 J]
+const SOLAR_J=Math.log10(6.9)+41;      // 太陽系破壊1回(太陽の重力束縛エネルギー)
+const GALAXY_J=Math.log10(3.0)+53;     // 銀河系破壊1回
+const UNIV_J=Math.log10(4.0)+69;       // 全宇宙1個分(観測可能宇宙の全質量エネルギー)
+const DESTR=[["地球",EARTH_J],["太陽系",SOLAR_J],["銀河系",GALAXY_J],["全宇宙",UNIV_J]];
+const REFS=[
+  ["原子力発電所1基",9],
+  ["人類文明の総消費電力",13.28],
+  ["地球が受ける太陽光の総量",17.23],
+  ["太陽の総出力",26.58],
+  ["天の川銀河の全恒星",37],
+  ["観測可能な宇宙の全恒星",48.7],
+  ["プランク光度(物理の上限)",52.56],
+];
+// 漢数字単位 (10^4刻み)
+const KAN=["","万","億","兆","京","垓","𥝱","穣","溝","澗","正","載","極","恒河沙","阿僧祇","那由他","不可思議","無量大数"];
+function jpNum(lg){ // log10 → 「約30澗」表記
+  if(lg<4) return "約"+Math.round(Math.pow(10,lg)).toLocaleString();
+  const grp=Math.floor(lg/4);
+  if(grp>=KAN.length) return "約10^"+Math.round(lg);
+  const m=Math.pow(10,lg-grp*4);
+  return "約"+(m>=10?Math.round(m):m.toPrecision(2))+KAN[grp];
+}
+const DOOMS=[
+  {max:9,  lv:"LV.0 — 平和",      c:"#3ddc97", v:"ちょっと明るい深海。",
+   d:t=>`周囲の深海魚が眩しがる程度。観測者は「お、光った?」で終わり。世界は今日も平和です。`},
+  {max:13.28,lv:"LV.1 — 局所災害", c:"#ffe14b", v:"半径数kmの海が沸騰する。",
+   d:t=>`原発${t.vsNP}基分の熱が一点から放出。半径${t.boilR}の海水が沸騰し、巨大な蒸気柱と局地津波が発生。漁業は終了しました。`},
+  {max:17.23,lv:"LV.2 — 文明崩壊", c:"#ffb454", v:"人類の全エネルギーを超えた。",
+   d:t=>`人類文明の総消費電力の${t.vsHuman}倍。海面は恒常的な蒸気爆発で覆われ、水蒸気が大気を満たし温室効果が暴走。沿岸都市は蒸気津波で壊滅します。`},
+  {max:26.58,lv:"LV.3 — 地球終了", c:"#ff8d3a", v:"地球の全海洋が蒸発する。",
+   d:t=>`地球が太陽から受ける全エネルギーを超過。全海洋が${t.oceanT}で完全に蒸発。1秒の発光で地球を${t.earthX}回吹き飛ばせます。`},
+  {max:37,  lv:"LV.4 — 太陽超え",  c:"#ff5252", v:"恒星を名乗っていいレベル。",
+   d:t=>`太陽${t.vsSun}個分の輝き。1秒の発光エネルギーは地球${t.earthX}回分の破壊力。月も金星も火星もまとめて焼き払われます。`},
+  {max:48.7,lv:"LV.5 — 銀河級",    c:"#ff5252", v:"天の川銀河より明るい。",
+   d:t=>`銀河全体の恒星を束ねた輝度を超過。超新星やガンマ線バーストの領域で、数千光年先の惑星の生態系まで滅ぼします。`},
+  {max:52.56,lv:"LV.6 — 宇宙級",   c:"#d96bff", v:"観測可能な宇宙の全部の星より明るい。",
+   d:t=>`宇宙に存在する全恒星の合計出力を超えました。1秒光るだけで全宇宙が何個分も吹き飛ぶレベルです。`},
+  {max:1e9, lv:"LV.MAX — 物理崩壊", c:"#ffffff", v:"光がブラックホールになる。",
+   d:t=>`プランク光度(物理法則が許す放射の上限)を突破。光自身の重力で崩壊し「クーゲルブリッツ(光のブラックホール)」が形成されます。図鑑の説明、罪が重すぎる。`},
+];
+
+/* ---------- 例えテーブル ---------- */
+function luxAnalogy(lg){
+  if(lg<=-8.5) return "🌟 6等星クラス — 肉眼で見える限界(動画と同じ「ギリギリ見える」設定)";
+  if(lg<=-6.5) return "✨ 夜空のはっきり見える星くらい";
+  if(lg<=-4)   return "🌌 天の川がうっすら見える夜空くらい";
+  if(lg<=-1.5) return "🌒 月のない星明かりの夜くらい";
+  if(lg<=-0.2) return "🌕 満月の夜くらい(0.25lx前後)";
+  if(lg<=1.2)  return "🕯️ ろうそく1mの distance くらい";
+  if(lg<=2.7)  return "💡 リビングの照明くらい(50〜500lx)";
+  if(lg<=4.2)  return "🌥️ 曇りの日の屋外くらい(1万lx)";
+  return "☀️ 真夏の直射日光クラス(10万lx) — 水面が第二の太陽になります";
+}
+function depthAnalogy(d){
+  if(d<300)   return "🐟 大陸棚 — まだ太陽光が届くゾーン";
+  if(d<1100)  return "🦑 トワイライトゾーン — 自然光はここで尽きる";
+  if(d<3900)  return "🚢 タイタニック号の眠る深さ(約3,800m)";
+  if(d<5500)  return "📖 図鑑の言う「深い海の底」≒ 5,000m(動画と同じ)";
+  if(d<7000)  return "🤿 しんかい6500の限界深度ゾーン";
+  return "🕳️ マリアナ海溝チャレンジャー海淵(10,920m) — 地球で一番深い場所";
+}
+function waveAnalogy(l,white){
+  if(white) return "⚪ 白色光 — 赤・緑はすぐ吸収されるので、生き残る青(α=0.018)で計算して3倍(動画と同じ)";
+  if(l<450) return "🟣 紫〜藍 — 散乱が強めだけど良く透ける";
+  if(l<500) return "🔵 青 — 海で一番伝わりやすい色(α≈0.018)。海が青いのはこのため";
+  if(l<565) return "🟢 緑 — そこそこ伝わる。ダイバーのライトもこの辺";
+  if(l<590) return "🟡 黄 — 数百mで大半が吸収される";
+  if(l<625) return "🟠 橙 — 100m級でほぼ消える。深海から届かせるのは正気じゃない";
+  return "🔴 赤 — 数十mで消える色。これで5,000m貫通は指数が宇宙を壊します";
+}
+function effAnalogy(e){
+  if(e<10)   return "🔥 ほぼ熱! 効率最悪 — 焚き火で照明するレベル";
+  if(e<25)   return "💡 白熱電球くらい(15lm/W) — 9割以上が熱になる";
+  if(e<95)   return "🏮 蛍光灯くらい(60〜90lm/W)";
+  if(e<=110) return "💎 LEDくらい(100lm/W) — 動画と同じ設定";
+  if(e<250)  return "⚡ 最高級LEDクラス(200lm/W)";
+  if(e<450)  return "🦗 ホタルの生物発光クラス — 自然界トップの高効率";
+  return "🧪 683lm/W = 物理的な上限(緑555nmで全エネルギーが光になる理論値)";
+}
+
+/* ---------- UI ---------- */
+const $=id=>document.getElementById(id);
+const sl={lux:$('lux'),depth:$('depth'),wave:$('wave'),eff:$('eff')};
+const whiteCk=$('white');
+function fmtPow10(x){
+  if(x<6) return Math.round(Math.pow(10,x)).toLocaleString()+" W";
+  const e=Math.floor(x), m=Math.pow(10,x-e);
+  return `${m.toFixed(2)}×10<sup>${e}</sup> W`;
+}
+function fmtNum(lg){
+  if(lg<0) return "1未満";
+  if(lg<6){const v=Math.pow(10,lg);return v>=100?Math.round(v).toLocaleString():v.toPrecision(3);}
+  return jpNum(lg);
+}
+function fmtTime(sec){
+  if(sec<1e-6) return "一瞬(マイクロ秒未満)";
+  if(sec<1e-3) return (sec*1e6).toPrecision(2)+"マイクロ秒";
+  if(sec<1) return (sec*1e3).toPrecision(2)+"ミリ秒";
+  if(sec<60) return sec.toPrecision(2)+"秒";
+  if(sec<3600) return (sec/60).toPrecision(2)+"分";
+  if(sec<86400) return (sec/3600).toPrecision(2)+"時間";
+  if(sec<3.15e7) return (sec/86400).toPrecision(2)+"日";
+  if(sec<3.15e17) return (sec/3.15e7).toPrecision(2)+"年";
+  return "宇宙年齢オーバー";
+}
+function fmtDist(m){return m<1000? Math.round(m)+" m" : (m/1000).toPrecision(3)+" km";}
+function waveColor(l){
+  let r,g,b;
+  if(l<440){r=-(l-440)/40;g=0;b=1;}
+  else if(l<490){r=0;g=(l-440)/50;b=1;}
+  else if(l<510){r=0;g=1;b=-(l-510)/20;}
+  else if(l<580){r=(l-510)/70;g=1;b=0;}
+  else if(l<645){r=1;g=-(l-645)/65;b=0;}
+  else{r=1;g=0;b=0;}
+  return [Math.round(r*255),Math.round(g*255),Math.round(b*255)];
+}
+
+let logP=0, logI=0, state={}, doomNow=DOOMS[0];
+function calc(){
+  const Elg=parseFloat(sl.lux.value);
+  const E=Math.pow(10,Elg);
+  const d=parseFloat(sl.depth.value);
+  const white=whiteCk.checked;
+  const l=white?470:parseFloat(sl.wave.value);
+  const eta=parseFloat(sl.eff.value);
+  const k=kOf(l);
+  // log10(I) = log10(E·d²) + k·d·log10e  (+log10(3) 白色)
+  logI=Math.log10(E*d*d)+k*d*LOG10E+(white?Math.log10(3):0);
+  logP=logI+Math.log10(4*Math.PI/eta);
+
+  $('luxV').textContent=(E>=1?E.toLocaleString(undefined,{maximumFractionDigits:1}):"10^"+Elg.toFixed(1))+" lx";
+  $('depthV').textContent=d.toLocaleString()+" m";
+  $('waveV').textContent=(white?"白色(470nm基準)":parseFloat(sl.wave.value)+" nm")+" / α="+k.toFixed(3);
+  $('effV').textContent=eta+" lm/W";
+  $('hDepth').textContent=d.toLocaleString()+"m";
+  $('luxA').textContent=luxAnalogy(Elg);
+  $('depthA').textContent=depthAnalogy(d);
+  $('waveA').textContent=waveAnalogy(parseFloat(sl.wave.value),white);
+  $('effA').textContent=effAnalogy(eta);
+  sl.wave.disabled=white; sl.wave.style.opacity=white?.35:1;
+
+  $('power').innerHTML=fmtPow10(logP);
+  $('powerJp').textContent=jpNum(logP)+"ワット(光度 "+jpNum(logI)+"カンデラ)";
+  $('powerSub').textContent="水中減衰 e^"+Math.round(k*d).toLocaleString()+" を貫通するための出力";
+
+  let html="";
+  REFS.forEach(([n,ref])=>{
+    const diff=logP-ref;
+    html+=`<div class="cmp-row"><span class="name">${n}</span><span class="x ${diff>=0?'over':''}">${diff>=0?fmtNum(diff)+"倍":"未満"}</span></div>`;
+  });
+  const earthX=logP-EARTH_J;
+  DESTR.forEach(([nm,ref])=>{
+    const dx=logP-ref;
+    html+=`<div class="cmp-row"><span class="name">${nm}を吹き飛ばす(1秒の発光で)</span><span class="x ${dx>=0?'over':''}">${dx>=0?fmtNum(dx)+"回":"破壊力不足"}</span></div>`;
+  });
+  $('cmp').innerHTML=html;
+
+  const oceanSec=Math.pow(10,Math.log10(3.6)+27-logP);
+  const boilR=Math.sqrt(Math.pow(10,Math.min(logP,40))/(4*Math.PI*1e6));
+  state={
+    vsNP:fmtNum(logP-9), vsHuman:fmtNum(logP-13.28), vsSun:fmtNum(logP-26.58),
+    oceanT:fmtTime(oceanSec), boilR:fmtDist(boilR),
+    earthX: earthX>=0?fmtNum(earthX):null, earthXlg:earthX,
+  };
+  doomNow=DOOMS.find(x=>logP<x.max);
+  $('doomLv').textContent=doomNow.lv;
+  $('doomV').textContent=doomNow.v;
+  $('doomD').textContent=doomNow.d(state);
+  const el=$('doom');
+  el.style.borderColor=doomNow.c; el.style.background=doomNow.c+"14";
+  $('doomLv').style.color=doomNow.c;
+  const pct=Math.min(100,Math.max(2,logP/52.56*100));
+  $('gaugeBar').style.width=pct+"%"; $('gaugeBar').style.background=doomNow.c;
+}
+
+/* ---------- 海洋断面 ---------- */
+const cv=$('sea'), ctx=cv.getContext('2d');
+let t0=performance.now();
+const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function draw(now){
+  const t=(now-t0)/1000;
+  const W=cv.width,H=cv.height;
+  const d=parseFloat(sl.depth.value);
+  const l=whiteCk.checked?470:parseFloat(sl.wave.value);
+  let [r,g,b]=whiteCk.checked?[210,235,255]:waveColor(l);
+  const surfY=60, botY=H-70;
+  let sky=ctx.createLinearGradient(0,0,0,surfY);
+  sky.addColorStop(0,"#0c2238"); sky.addColorStop(1,"#123a52");
+  ctx.fillStyle=sky; ctx.fillRect(0,0,W,surfY);
+  let sea=ctx.createLinearGradient(0,surfY,0,H);
+  sea.addColorStop(0,"#0c3a55"); sea.addColorStop(.35,"#072438"); sea.addColorStop(1,"#02070d");
+  ctx.fillStyle=sea; ctx.fillRect(0,surfY,W,H-surfY);
+  ctx.strokeStyle="#3e7d9c"; ctx.lineWidth=2; ctx.beginPath();
+  for(let x=0;x<=W;x+=4){
+    const y=surfY+Math.sin(x*0.05+t*1.6)*3;
+    x===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+  ctx.font="9px monospace"; ctx.textAlign="left";
+  ctx.lineWidth=3; ctx.strokeStyle="rgba(2,10,18,.9)"; ctx.lineJoin="round";
+  for(let i=0;i<=4;i++){
+    const yy=surfY+(botY-surfY)*i/4;
+    ctx.fillStyle="#9fc4d8"; ctx.fillRect(6,yy,10,1);
+    const lbl=Math.round(d*i/4).toLocaleString()+"m";
+    ctx.strokeText(lbl,20,yy+3); ctx.fillStyle="#cfe6f2"; ctx.fillText(lbl,20,yy+3);
+  }
+  const cx=W*0.55;
+  const power=Math.min(1,Math.max(0.1,(logP-5)/45));
+  const cone=ctx.createLinearGradient(0,botY,0,surfY);
+  cone.addColorStop(0,`rgba(${r},${g},${b},${0.85*power+0.1})`);
+  cone.addColorStop(1,`rgba(${r},${g},${b},${0.25*power})`);
+  ctx.fillStyle=cone;
+  ctx.beginPath();
+  ctx.moveTo(cx-8,botY);
+  ctx.lineTo(cx-60-80*power,surfY);
+  ctx.lineTo(cx+60+80*power,surfY);
+  ctx.lineTo(cx+8,botY);
+  ctx.closePath(); ctx.fill();
+  const glow=ctx.createRadialGradient(cx,surfY,0,cx,surfY,90+160*power);
+  glow.addColorStop(0,`rgba(${r},${g},${b},${0.55*power+0.1})`);
+  glow.addColorStop(1,"rgba(0,0,0,0)");
+  ctx.fillStyle=glow; ctx.fillRect(0,0,W,surfY+80);
+  ctx.fillStyle="#1c1c28";
+  ctx.beginPath();
+  ctx.moveTo(cx-26,surfY-4);ctx.lineTo(cx+26,surfY-4);ctx.lineTo(cx+16,surfY+8);ctx.lineTo(cx-16,surfY+8);
+  ctx.closePath();ctx.fill();
+  ctx.fillRect(cx-3,surfY-18,4,14);
+  const ly=botY, pul=reduced?1:(0.85+0.15*Math.sin(t*3));
+  ctx.fillStyle="#0e1c2a";
+  ctx.beginPath(); ctx.ellipse(cx,ly,30,18,0,0,6.29); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(cx-28,ly); ctx.lineTo(cx-44,ly-10); ctx.lineTo(cx-44,ly+10); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle="#0e1c2a"; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(cx+18,ly-14); ctx.quadraticCurveTo(cx+34,ly-34,cx+22,ly-40); ctx.stroke();
+  const orb=ctx.createRadialGradient(cx+22,ly-42,1,cx+22,ly-42,14*pul+10*power);
+  orb.addColorStop(0,"#ffffff");
+  orb.addColorStop(.4,`rgba(${r},${g},${b},.95)`);
+  orb.addColorStop(1,"rgba(0,0,0,0)");
+  ctx.fillStyle=orb;
+  ctx.beginPath(); ctx.arc(cx+22,ly-42,14*pul+10*power,0,6.29); ctx.fill();
+  ctx.fillStyle=`rgba(${r},${g},${b},.9)`;
+  ctx.beginPath(); ctx.arc(cx+12,ly-5,4,0,6.29); ctx.fill();
+  ctx.fillStyle="#06101a"; ctx.fillRect(0,botY+22,W,H);
+  ctx.font="10px monospace"; ctx.textAlign="center";
+  ctx.lineWidth=3; ctx.strokeStyle="rgba(2,10,18,.9)";
+  ctx.strokeText("LANTURN — 図鑑No.171 ライトポケモン", cx, H-26);
+  ctx.fillStyle="#cfe6f2";
+  ctx.fillText("LANTURN — 図鑑No.171 ライトポケモン", cx, H-26);
+  if(!reduced && !godActive) requestAnimationFrame(draw);
+}
+
+/* ---------- プリセット ---------- */
+const PRESETS={
+  dex:   {lux:-9, depth:5000, wave:470, eff:100, white:true},
+  modest:{lux:-9, depth:1000, wave:470, eff:300, white:false},
+  day:   {lux:4.5,depth:5000, wave:580, eff:100, white:false},
+  max:   {lux:5,  depth:10920,wave:660, eff:1,  white:false},
+};
+document.querySelectorAll('#presets button').forEach(btn=>{
+  btn.onclick=()=>{
+    let p;
+    if(btn.dataset.p==='mood'){
+      // 今日のランターンの気分: 全条件をランダムに
+      p={
+        lux:(Math.random()*14-9).toFixed(1),          // 10^-9 〜 10^5 lx
+        depth:Math.round((100+Math.random()*10820)/20)*20,
+        wave:400+Math.round(Math.random()*60)*5,
+        eff:1+Math.round(Math.random()*682),
+        white:Math.random()<0.35,
+      };
+      sfxClick();
+    } else {
+      p=PRESETS[btn.dataset.p];
+      sfxClick();
+    }
+    sl.lux.value=p.lux; sl.depth.value=p.depth; sl.wave.value=p.wave; sl.eff.value=p.eff;
+    whiteCk.checked=p.white;
+    document.querySelectorAll('#presets button').forEach(b=>b.classList.toggle('on',b===btn));
+    update();
+  };
+});
+function update(){ calc(); if(reduced) draw(performance.now()); }
+[...Object.values(sl),whiteCk].forEach(s=>s.addEventListener('input',()=>{
+  document.querySelectorAll('#presets button').forEach(b=>b.classList.remove('on'));
+  update();
+}));
+
+/* ---------- シミュレーション(マルチスケール演出) ---------- */
+const god=$('god'), gcv=$('godCv'), gx=gcv.getContext('2d');
+let godActive=false, godStart=0;
+const R_=(n,f)=>Array.from({length:n},f);
+const stars=R_(170,()=>({x:Math.random(),y:Math.random(),s:Math.random()*1.6+0.4}));
+const debris=R_(90,()=>({a:Math.random()*6.28,v:Math.random()*0.7+0.3,s:Math.random()*5+2,r:Math.random()}));
+const conts=R_(9,()=>({a:Math.random()*6.28,r:Math.random()*0.75,s:Math.random()*0.32+0.12}));
+const galStars=R_(900,i=>{const arm=i%2, rr=Math.pow(Math.random(),0.6);
+  return {r:rr, th:arm*Math.PI+rr*5.2+(Math.random()-.5)*.55, s:Math.random()*1.7+0.3, c:Math.random()};});
+const unis=R_(70,()=>({x:Math.random()*0.9+0.05,y:Math.random()*0.9+0.05,s:Math.random()*15+6,a:Math.random()*6.28,h:Math.random()}));
+const PLANETS=[["水星",46,3,"#b9a08a"],["金星",72,5,"#e8c477"],["地球",100,5,"#5fa8e0"],
+  ["火星",130,4,"#d9764a"],["木星",185,11,"#d8b48c"],["土星",235,9,"#e3cf9a"],
+  ["天王星",280,7,"#9fd8e0"],["海王星",318,7,"#5a7de0"]];
+const easeI=t=>t*t*(3-2*t);
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const fade=(t,t0,d)=>clamp((t-t0)/d,0,1);
+
+function drawStarfield(W,H,t){
+  gx.fillStyle="#cfe6ff";
+  stars.forEach(st=>{gx.globalAlpha=0.4+0.5*Math.sin(t*2+st.x*40)**2;gx.fillRect(st.x*W,st.y*H,st.s,st.s);});
+  gx.globalAlpha=1;
+}
+
+// ランターンの位置は画面上で常に(W*0.62, H*0.60)に固定
+// 地球中心 = ランターン位置 - (R*0.42, R*0.32) のオフセット分だけずらす
+function lanturnPos(W,H){ return {lx:W*0.62, ly:H*0.60}; }
+
+function sceneEarth(W,H,t,lvi,alpha,scale){
+  if(alpha<=0) return;
+  gx.save(); gx.globalAlpha=alpha;
+  const zoom=(1.9-0.9*easeI(Math.min(1,t/1.5)))*scale;
+  const R=170*zoom;
+  // ランターン位置を画面固定点に合わせて地球中心を決める
+  const {lx:ex_lx, ly:ex_ly}=lanturnPos(W,H);
+  const ex=ex_lx-R*0.42, ey=ex_ly-R*0.32;
+  const boomT=Math.max(0,(t-2.2)/3.5);
+  const boom=easeI(Math.min(1,boomT));
+  const destroyed=lvi>=3? boom : 0;
+  if(destroyed<1){
+    const eg=gx.createRadialGradient(ex-R*0.35,ey-R*0.35,R*0.1,ex,ey,R);
+    eg.addColorStop(0,"#7ec8ee"); eg.addColorStop(.55,"#1d6aa8"); eg.addColorStop(1,"#0a2c50");
+    gx.save();
+    gx.beginPath(); gx.arc(ex,ey,R,0,6.29); gx.clip();
+    gx.fillStyle=eg; gx.fillRect(ex-R,ey-R,2*R,2*R);
+    gx.fillStyle="#3f7d4e";
+    conts.forEach(c=>{
+      const px=ex+Math.cos(c.a+0.04*t)*R*c.r, py=ey+Math.sin(c.a*1.7)*R*c.r*0.8;
+      gx.beginPath(); gx.ellipse(px,py,R*c.s,R*c.s*0.6,c.a,0,6.29); gx.fill();
+    });
+    gx.fillStyle="rgba(255,255,255,.25)";
+    for(let i=0;i<6;i++){
+      gx.beginPath();
+      gx.ellipse(ex+Math.cos(i*1.1+t*0.06)*R*0.7, ey+Math.sin(i*2.3)*R*0.5, R*0.3,R*0.07,i,0,6.29);
+      gx.fill();
+    }
+    if(lvi>=2){
+      gx.fillStyle=`rgba(245,250,255,${0.75*boom})`;
+      gx.beginPath(); gx.arc(ex,ey,R*boom*1.05,0,6.29); gx.fill();
+    }
+    if(lvi>=3 && boom>0.25){
+      gx.strokeStyle=`rgba(255,140,40,${Math.min(1,(boom-0.25)*2)})`;
+      gx.lineWidth=3;
+      for(let i=0;i<8;i++){
+        gx.beginPath(); gx.moveTo(ex,ey);
+        let px=ex,py=ey,a=i*0.785+0.2;
+        for(let s2=0;s2<6;s2++){
+          a+=(Math.sin(i*9+s2*7)*0.5);
+          px+=Math.cos(a)*R/5; py+=Math.sin(a)*R/5;
+          gx.lineTo(px,py);
+        }
+        gx.stroke();
+      }
+    }
+    gx.restore();
+    gx.strokeStyle="rgba(120,200,255,.35)"; gx.lineWidth=4;
+    gx.beginPath(); gx.arc(ex,ey,R+3,0,6.29); gx.stroke();
+  }
+  const sev=Math.min(1,Math.max(0,(logP-9)/43));
+  const lx=ex_lx, lyy=ex_ly;
+  if(t>0.4 && destroyed<0.9){
+    const p=Math.min(1,(t-0.4)/0.8);
+    const fl=gx.createRadialGradient(lx,lyy,0,lx,lyy,18+90*p*(0.5+sev));
+    fl.addColorStop(0,"#ffffff");
+    fl.addColorStop(.3,"rgba(160,230,255,.9)");
+    fl.addColorStop(1,"rgba(0,0,0,0)");
+    gx.fillStyle=fl;
+    gx.beginPath(); gx.arc(lx,lyy,18+90*p*(0.5+sev),0,6.29); gx.fill();
+  }
+  if(t>2.2 && lvi>=1){
+    for(let w2=0;w2<3;w2++){
+      const rt=(t-2.2-w2*0.5)/2;
+      if(rt>0&&rt<1.2){
+        gx.strokeStyle=`rgba(255,220,170,${(1-rt)*0.8})`;
+        gx.lineWidth=8*(1-rt)+2;
+        gx.beginPath(); gx.arc(lx,lyy,rt*(R*0.8+sev*W*0.8),0,6.29); gx.stroke();
+      }
+    }
+  }
+  if(lvi>=3 && boom>0.4){
+    const db=(boom-0.4)/0.6;
+    gx.fillStyle="#3a2418";
+    debris.forEach(d2=>{
+      const rr=R*(0.3+d2.v*db*2.4);
+      const px=ex+Math.cos(d2.a)*rr, py=ey+Math.sin(d2.a)*rr;
+      gx.globalAlpha=alpha*Math.max(0,1-db*0.8);
+      gx.fillRect(px,py,d2.s,d2.s);
+      if(d2.r>0.6){gx.fillStyle="#ff7b30";gx.fillRect(px,py,d2.s*0.6,d2.s*0.6);gx.fillStyle="#3a2418";}
+    });
+    gx.globalAlpha=alpha;
+    const core=gx.createRadialGradient(ex,ey,0,ex,ey,R*(0.5+db));
+    core.addColorStop(0,"#fff7e0"); core.addColorStop(.4,"rgba(255,140,40,.8)");
+    core.addColorStop(1,"rgba(0,0,0,0)");
+    gx.fillStyle=core;
+    gx.beginPath(); gx.arc(ex,ey,R*(0.5+db),0,6.29); gx.fill();
+  }
+  gx.restore();
+}
+
+function sceneSolar(W,H,p,alpha){
+  if(alpha<=0) return;
+  gx.save(); gx.globalAlpha=alpha;
+  const sc=H/720;
+  // 太陽系の中心(太陽)は地球の軌道半径分だけランターン固定点からずらす
+  const {lx:earthFX,ly:earthFY}=lanturnPos(W,H);
+  const earthOrb=100*sc*1.05;
+  const earthAng=2*1.5+0.5; // PLANETS[2](地球) の angle = i*1.5+0.5, i=2
+  const cx=earthFX-Math.cos(earthAng)*earthOrb;
+  const cy=earthFY-Math.sin(earthAng)*earthOrb;
+  const sg=gx.createRadialGradient(cx,cy,2,cx,cy,30*sc);
+  sg.addColorStop(0,"#fff6d8"); sg.addColorStop(.5,"#ffce54"); sg.addColorStop(1,"rgba(255,150,40,0)");
+  gx.fillStyle=sg; gx.beginPath(); gx.arc(cx,cy,30*sc,0,6.29); gx.fill();
+  // 軌道と惑星
+  let earthX=0, earthY=0;
+  PLANETS.forEach(([nm,orb,sz,col],i)=>{
+    const r=orb*sc*1.05;
+    gx.strokeStyle="rgba(150,190,220,.22)"; gx.lineWidth=1;
+    gx.beginPath(); gx.arc(cx,cy,r,0,6.29); gx.stroke();
+    const ang=i*1.5+0.5;
+    const px=cx+Math.cos(ang)*r, py=cy+Math.sin(ang)*r;
+    if(nm==="地球"){earthX=px;earthY=py;} // 位置はlanturnPos由来のcx/cyから計算
+    gx.fillStyle=col;
+    gx.beginPath(); gx.arc(px,py,sz*sc*0.9,0,6.29); gx.fill();
+  });
+  // 地球位置を固定点で上書き(ランターン=地球の位置を画面固定)
+  earthX=earthFX; earthY=earthFY;
+  const fl=easeI(clamp(p/0.5,0,1));
+  const flR=(20+fl*W*0.22)*1;
+  const fg=gx.createRadialGradient(earthX,earthY,0,earthX,earthY,flR);
+  fg.addColorStop(0,"#ffffff"); fg.addColorStop(.4,"rgba(220,240,255,.95)");
+  fg.addColorStop(1,"rgba(0,0,0,0)");
+  gx.fillStyle=fg; gx.beginPath(); gx.arc(earthX,earthY,flR,0,6.29); gx.fill();
+  // 衝撃波が惑星を飲み込む
+  for(let w2=0;w2<3;w2++){
+    const rt=p*1.4-w2*0.18;
+    if(rt>0&&rt<1.3){
+      gx.strokeStyle=`rgba(255,230,180,${Math.max(0,(1.1-rt))*0.9})`;
+      gx.lineWidth=10*(1.2-rt)+2;
+      gx.beginPath(); gx.arc(earthX,earthY,rt*W*0.75,0,6.29); gx.stroke();
+    }
+  }
+  // 波に飲まれた惑星は白熱→砕けて破片が飛び散る
+  const waveR=p*1.4*W*0.75;
+  PLANETS.forEach(([nm,orb,sz,col],i)=>{
+    const r=orb*sc*1.05, ang=i*1.5+0.5;
+    const px=cx+Math.cos(ang)*r, py=cy+Math.sin(ang)*r;
+    const dist=Math.hypot(px-earthX,py-earthY);
+    if(waveR<=dist) return;
+    const q=clamp((waveR-dist)/(W*0.20),0,1); // 0=直撃直後 1=完全粉砕
+    const dirA=Math.atan2(py-earthY,px-earthX);
+    if(q<0.3){
+      // 直撃: 白熱して膨らむ
+      gx.fillStyle="rgba(255,255,255,.95)";
+      gx.beginPath(); gx.arc(px,py,sz*sc*(1.3+q*2),0,6.29); gx.fill();
+    }
+    // 破片: 惑星ごとに7個、決め打ち角度で飛散
+    for(let j=0;j<7;j++){
+      const fa=dirA+(j-3)*0.42+Math.sin(i*7+j*13)*0.25;
+      const fd=q*(60+j*14)*sc;
+      const fx2=px+Math.cos(fa)*fd, fy2=py+Math.sin(fa)*fd;
+      const fs2=sz*sc*0.45*(1-q*0.6);
+      gx.globalAlpha=alpha*Math.max(0,1-q)*0.95;
+      gx.fillStyle=q<0.45?"#ffffff":col;
+      gx.fillRect(fx2-fs2/2,fy2-fs2/2,fs2,fs2);
+      // 尾を引く発光
+      if(q>0.1&&q<0.8){
+        gx.globalAlpha=alpha*(1-q)*0.4;
+        gx.strokeStyle="#ffd9a0"; gx.lineWidth=1.5;
+        gx.beginPath(); gx.moveTo(px,py); gx.lineTo(fx2,fy2); gx.stroke();
+      }
+    }
+    gx.globalAlpha=alpha;
+  });
+  gx.fillStyle="rgba(255,255,255,"+(0.5*clamp((p-0.75)/0.25,0,1))+")";
+  gx.fillRect(-1,-1,W+2,H+2);
+  gx.restore();
+}
+
+function sceneGalaxy(W,H,p,alpha,t){
+  if(alpha<=0) return;
+  gx.save(); gx.globalAlpha=alpha;
+  const cx=W/2, cy=H/2, R=H*0.42;
+  gx.translate(cx,cy); gx.rotate(t*0.01);
+  // コア(太陽と見間違えないよう、青白く控えめ+横に潰した銀河バルジ形状)
+  const cg=gx.createRadialGradient(0,0,1,0,0,R*0.16);
+  cg.addColorStop(0,"rgba(235,240,255,.85)");
+  cg.addColorStop(.5,"rgba(190,205,240,.35)");
+  cg.addColorStop(1,"rgba(0,0,0,0)");
+  gx.save(); gx.scale(1,0.5);
+  gx.fillStyle=cg; gx.beginPath(); gx.arc(0,0,R*0.16,0,6.29); gx.fill();
+  gx.restore();
+  // 腕の一点(ランターン)を画面固定点に合わせる
+  const {lx:_glx,ly:_gly}=lanturnPos(W,H);
+  const fx=_glx-W/2, fy=(_gly-H/2)*0.55; // 銀河は楕円なのでy方向を圧縮
+  // 渦状腕(波に飲まれた星は白熱→外向きに吹き散らされて消える)
+  const gWaveR=p*1.3*R*2.0;
+  galStars.forEach(st=>{
+    let px=Math.cos(st.th)*st.r*R, py=Math.sin(st.th)*st.r*R*0.55;
+    const dist=Math.hypot(px-fx,py-fy);
+    let a2=alpha*(0.35+0.55*(1-st.r)), col=st.c<0.12?"#ffe9c8":(st.c<0.6?"#cfe4ff":"#8fb8e8");
+    if(gWaveR>dist){
+      const q=clamp((gWaveR-dist)/(R*0.7),0,1);
+      const dirA=Math.atan2(py-fy,px-fx);
+      px+=Math.cos(dirA)*q*R*0.55*(0.5+st.c);
+      py+=Math.sin(dirA)*q*R*0.55*(0.5+st.c);
+      col=q<0.4?"#ffffff":col;
+      a2*=Math.max(0,1-q);
+    }
+    gx.fillStyle=col; gx.globalAlpha=a2;
+    gx.fillRect(px,py,st.s,st.s);
+  });
+  gx.globalAlpha=alpha;
+  const fl=easeI(clamp(p/0.55,0,1));
+  const flR=6+fl*R*1.3;
+  const fg=gx.createRadialGradient(fx,fy,0,fx,fy,flR);
+  fg.addColorStop(0,"#ffffff"); fg.addColorStop(.35,"rgba(225,242,255,.95)");
+  fg.addColorStop(1,"rgba(0,0,0,0)");
+  gx.fillStyle=fg; gx.beginPath(); gx.arc(fx,fy,flR,0,6.29); gx.fill();
+  for(let w2=0;w2<2;w2++){
+    const rt=p*1.3-w2*0.22;
+    if(rt>0&&rt<1.2){
+      gx.strokeStyle=`rgba(220,238,255,${Math.max(0,1.05-rt)*0.85})`;
+      gx.lineWidth=8*(1.2-rt)+2;
+      gx.beginPath(); gx.arc(fx,fy,rt*R*2.0,0,6.29); gx.stroke();
+    }
+  }
+  gx.restore();
+  gx.fillStyle="rgba(255,255,255,"+(0.55*clamp((p-0.7)/0.3,0,1))+")";
+  gx.fillRect(0,0,W,H);
+}
+
+function drawMiniGalaxy(px,py,sz,ang,q,dirA){
+  // q: 0=無事 / 0〜0.35=白熱 / それ以上=砕けて流れ散る
+  if(q<0.35){
+    gx.save(); gx.translate(px,py); gx.rotate(ang);
+    const hot=q>0;
+    gx.fillStyle=hot?"rgba(255,255,255,.95)":"rgba(150,185,230,.5)";
+    gx.beginPath(); gx.ellipse(0,0,sz*(1+q*1.5),sz*0.38*(1+q*1.5),0,0,6.29); gx.fill();
+    gx.fillStyle=hot?"#ffffff":"rgba(255,235,200,.85)";
+    gx.beginPath(); gx.arc(0,0,sz*0.25,0,6.29); gx.fill();
+    gx.restore();
+    return;
+  }
+  // 砕けた銀河: 6つの欠片が流されながらフェード
+  const q2=(q-0.35)/0.65;
+  for(let j=0;j<6;j++){
+    const fa=dirA+(j-2.5)*0.35;
+    const fd=q2*sz*5;
+    const fx2=px+Math.cos(fa)*fd, fy2=py+Math.sin(fa)*fd;
+    gx.globalAlpha=Math.max(0,1-q2)*0.9;
+    gx.fillStyle=q2<0.4?"#ffffff":"rgba(190,210,245,.8)";
+    const fs2=sz*0.3*(1-q2*0.5);
+    gx.fillRect(fx2-fs2/2,fy2-fs2/2,fs2,fs2);
+  }
+  gx.globalAlpha=1;
+}
+
+function sceneUniverse(W,H,p,alpha,lvi,t){
+  if(alpha<=0) return;
+  gx.save(); gx.globalAlpha=alpha;
+  const {lx:fx,ly:fy}=lanturnPos(W,H);
+  const waveR=p*1.35*W;
+  unis.forEach(u=>{
+    const px=u.x*W, py=u.y*H;
+    const dist=Math.hypot(px-fx,py-fy);
+    const q=waveR>dist? clamp((waveR-dist)/(W*0.26),0,1) : 0;
+    const dirA=Math.atan2(py-fy,px-fx);
+    drawMiniGalaxy(px,py,u.s,u.a+t*0.005,q,dirA);
+  });
+  const fl=easeI(clamp(p/0.5,0,1));
+  const flR=8+fl*W*0.3;
+  const fg=gx.createRadialGradient(fx,fy,0,fx,fy,flR);
+  fg.addColorStop(0,"#ffffff"); fg.addColorStop(.4,"rgba(235,246,255,.95)");
+  fg.addColorStop(1,"rgba(0,0,0,0)");
+  gx.fillStyle=fg; gx.beginPath(); gx.arc(fx,fy,flR,0,6.29); gx.fill();
+  for(let w2=0;w2<2;w2++){
+    const rt=p*1.25-w2*0.2;
+    if(rt>0&&rt<1.4){
+      gx.strokeStyle=`rgba(235,246,255,${Math.max(0,1.1-rt)*0.85})`;
+      gx.lineWidth=9*(1.3-rt)+2;
+      gx.beginPath(); gx.arc(fx,fy,rt*1.35*W,0,6.29); gx.stroke();
+    }
+  }
+  // 全宇宙ホワイトアウト
+  const wo=clamp((p-0.65)/0.35,0,1)*(lvi>=7?1:0.85);
+  gx.fillStyle=`rgba(255,255,255,${wo})`;
+  gx.fillRect(0,0,W,H);
+  gx.restore();
+  // LV.MAX: クーゲルブリッツ
+  if(lvi>=7 && t>8.2){
+    const bh=clamp((t-8.2)/1.8,0,1);
+    gx.fillStyle=`rgba(0,0,0,${bh})`; gx.fillRect(0,0,W,H);
+    gx.save(); gx.globalAlpha=bh;
+    const ex=W/2,ey=H/2,br=90;
+    const ring=gx.createRadialGradient(ex,ey,br*0.8,ex,ey,br*1.6);
+    ring.addColorStop(0,"rgba(0,0,0,0)");
+    ring.addColorStop(.45,"#ffd9a0"); ring.addColorStop(.6,"#ff8d3a");
+    ring.addColorStop(1,"rgba(0,0,0,0)");
+    gx.fillStyle=ring;
+    gx.beginPath(); gx.arc(ex,ey,br*1.7,0,6.29); gx.fill();
+    gx.fillStyle="#000";
+    gx.beginPath(); gx.arc(ex,ey,br,0,6.29); gx.fill();
+    // 降着円盤風の細リング
+    gx.strokeStyle="rgba(255,220,160,.9)"; gx.lineWidth=2.5;
+    gx.beginPath(); gx.ellipse(ex,ey,br*1.45,br*0.4,-0.4,0,6.29); gx.stroke();
+    gx.restore();
+  }
+}
+
+function godDraw(now){
+  if(!godActive) return;
+  const t=(now-godStart)/1000;
+  const W=gcv.width,H=gcv.height;
+  const lvi=DOOMS.indexOf(doomNow);
+  gx.fillStyle="#000005"; gx.fillRect(0,0,W,H);
+  drawStarfield(W,H,t);
+
+  // --- シーン遷移: 徐々にズームアウト ---
+  // 各シーンは「scaleパラメータ」で同一座標系上で拡大→縮小し、
+  // クロスフェードではなくスムーズなズームアウトとして見えるようにする
+  if(lvi<=3){
+    // 地球のみ: t=0〜1.5でズームイン→そのまま
+    sceneEarth(W,H,t,lvi,1,1);
+
+  } else if(lvi===4){
+    // 地球 → 太陽系: t=1.5〜3.5 でスムーズにズームアウト
+    const zoomOut=easeI(clamp((t-1.5)/2.0,0,1));
+    // 地球シーンをズームアウトしながら継続
+    const earthScale=1-zoomOut*0.85;
+    const earthAlpha=1-easeI(clamp((t-2.8)/1.0,0,1));
+    if(earthScale>0.05) sceneEarth(W,H,Math.min(t,2.2),lvi,earthAlpha,earthScale);
+    // 太陽系はズームアウト完了後にフェードイン
+    const solarAlpha=easeI(clamp((t-2.2)/1.0,0,1));
+    const solarP=clamp((t-2.5)/4.8,0,1);
+    sceneSolar(W,H,solarP,solarAlpha);
+
+  } else if(lvi===5){
+    // 地球 → 太陽系(一瞬) → 銀河系
+    const z1=easeI(clamp((t-1.3)/1.5,0,1));
+    const z2=easeI(clamp((t-2.6)/1.5,0,1));
+    const earthScale=1-z1*0.85;
+    const earthAlpha=1-easeI(clamp((t-2.0)/0.8,0,1));
+    if(earthScale>0.05) sceneEarth(W,H,Math.min(t,2.0),lvi,earthAlpha,earthScale);
+    const solarAlpha=easeI(clamp((t-1.9)/0.7,0,1))*(1-easeI(clamp((t-2.8)/0.8,0,1)));
+    sceneSolar(W,H,clamp((t-2.2)/2.0,0,1),solarAlpha);
+    const galAlpha=easeI(clamp((t-2.6)/1.0,0,1));
+    sceneGalaxy(W,H,clamp((t-3.0)/5.0,0,1),galAlpha,t);
+
+  } else {
+    // 地球 → 太陽系 → 銀河系 → 宇宙
+    const earthScale=1-easeI(clamp((t-1.0)/1.2,0,1))*0.9;
+    const earthAlpha=1-easeI(clamp((t-1.5)/0.7,0,1));
+    if(earthScale>0.04) sceneEarth(W,H,Math.min(t,1.8),lvi,earthAlpha,earthScale);
+    const solarAlpha=easeI(clamp((t-1.4)/0.7,0,1))*(1-easeI(clamp((t-2.3)/0.6,0,1)));
+    sceneSolar(W,H,clamp((t-1.8)/1.5,0,1),solarAlpha);
+    const galAlpha=easeI(clamp((t-2.2)/0.8,0,1))*(1-easeI(clamp((t-3.2)/0.7,0,1)));
+    sceneGalaxy(W,H,clamp((t-2.6)/1.8,0,1),galAlpha,t);
+    const univAlpha=easeI(clamp((t-3.0)/0.9,0,1));
+    sceneUniverse(W,H,clamp((t-3.4)/5.0,0,1),univAlpha,lvi,t);
+  }
+
+  const vT = lvi<=3?4.8 : lvi===4?7.4 : lvi===5?8.0 : 8.8;
+  if(t>vT){ $('godVerdict').style.opacity=1; $('godStats').style.opacity=1; }
+  if(t>vT+0.8){ $('godBack').style.opacity=1; }
+  requestAnimationFrame(godDraw);
+}
+/* ---------- 効果音(Web Audio合成・外部ファイル不要) ---------- */
+let audioOn=true, AC=null;
+function ac(){ if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)(); return AC; }
+function noiseBuf(dur){
+  const a=ac(), b=a.createBuffer(1, Math.max(1,a.sampleRate*dur|0), a.sampleRate);
+  const d=b.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+  return b;
+}
+function sfxClick(){
+  if(!audioOn) return;
+  try{
+    const a=ac(), t=a.currentTime;
+    const o=a.createOscillator(); o.type='square'; o.frequency.setValueAtTime(640,t);
+    const g=a.createGain(); g.gain.setValueAtTime(0.12,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.09);
+    o.connect(g).connect(a.destination); o.start(t); o.stop(t+0.1);
+  }catch(e){}
+}
+function sfxBoom(when=0, gain=0.8, len=2.2){
+  const a=ac(), t=a.currentTime+when;
+  // 爆発: ローパスノイズ + サブベースのピッチ落下
+  const n=a.createBufferSource(); n.buffer=noiseBuf(len);
+  const f=a.createBiquadFilter(); f.type='lowpass';
+  f.frequency.setValueAtTime(900,t); f.frequency.exponentialRampToValueAtTime(55,t+len);
+  const g=a.createGain(); g.gain.setValueAtTime(gain,t); g.gain.exponentialRampToValueAtTime(0.001,t+len);
+  n.connect(f); f.connect(g); g.connect(a.destination); n.start(t);
+  const o=a.createOscillator(); o.type='sine';
+  o.frequency.setValueAtTime(110,t); o.frequency.exponentialRampToValueAtTime(26,t+len*0.8);
+  const og=a.createGain(); og.gain.setValueAtTime(gain*0.9,t); og.gain.exponentialRampToValueAtTime(0.001,t+len);
+  o.connect(og); og.connect(a.destination); o.start(t); o.stop(t+len);
+}
+function sfxRiser(when=0, dur=2.0, gain=0.35){
+  const a=ac(), t=a.currentTime+when;
+  // 緊張感の上昇音
+  const o=a.createOscillator(); o.type='sawtooth';
+  o.frequency.setValueAtTime(60,t); o.frequency.exponentialRampToValueAtTime(880,t+dur);
+  const f=a.createBiquadFilter(); f.type='bandpass'; f.frequency.setValueAtTime(400,t);
+  f.frequency.exponentialRampToValueAtTime(2400,t+dur);
+  const g=a.createGain(); g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(gain,t+dur*0.85);
+  g.gain.exponentialRampToValueAtTime(0.001,t+dur+0.15);
+  o.connect(f); f.connect(g); g.connect(a.destination); o.start(t); o.stop(t+dur+0.2);
+}
+function sfxBH(when=0){
+  const a=ac(), t=a.currentTime+when;
+  // ブラックホール: 低周波ドローンが沈んでいく
+  const o=a.createOscillator(); o.type='sine';
+  o.frequency.setValueAtTime(55,t); o.frequency.exponentialRampToValueAtTime(22,t+3.2);
+  const o2=a.createOscillator(); o2.type='sine';
+  o2.frequency.setValueAtTime(57,t); o2.frequency.exponentialRampToValueAtTime(23.5,t+3.2); // うなり
+  const g=a.createGain(); g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(0.55,t+0.7);
+  g.gain.exponentialRampToValueAtTime(0.001,t+3.4);
+  o.connect(g); o2.connect(g); g.connect(a.destination);
+  o.start(t); o.stop(t+3.5); o2.start(t); o2.stop(t+3.5);
+}
+function playTimeline(lvi){
+  if(!audioOn) return;
+  try{
+    const a=ac(); if(a.state==='suspended') a.resume();
+    sfxRiser(0,2.0);                       // 発光のチャージ
+    sfxBoom(2.1,0.65,2.0);                 // 最初の爆発
+    if(lvi>=1) sfxBoom(2.65,0.45,1.5);     // 衝撃波の追い打ち
+    if(lvi>=3) sfxBoom(3.0,0.85,2.6);      // 地球崩壊
+    if(lvi>=4){ sfxBoom(3.8,0.85,3.0); sfxBoom(5.2,0.6,2.4); }   // 太陽系規模(多段)
+    if(lvi>=5){ sfxRiser(3.0,1.2,0.3); sfxBoom(4.6,0.9,3.4); }   // 銀河規模
+    if(lvi>=6){ sfxRiser(3.6,1.4,0.4); sfxBoom(5.6,1.0,3.6); }   // 宇宙規模
+    if(lvi>=7) sfxBH(8.2);                 // クーゲルブリッツ
+  }catch(e){}
+}
+const muteBtn=$('mute');
+muteBtn.onclick=()=>{
+  audioOn=!audioOn;
+  muteBtn.textContent=audioOn?"🔊":"🔇";
+  if(audioOn) sfxClick();
+};
+
+$('decide').onclick=()=>{
+  godActive=true;
+  god.classList.add('show');
+  $('godVerdict').style.opacity=0; $('godStats').style.opacity=0; $('godBack').style.opacity=0;
+  $('godVerdict').textContent=doomNow.lv+" 「"+doomNow.v+"」";
+  $('godVerdict').style.color=doomNow.c;
+  const st=[ jpNum(logP)+"ワット" ];
+  // 視点スケールに対応した破壊単位(回数が1未満なら1段階下の単位へ)
+  const lvi2=DOOMS.indexOf(doomNow);
+  let unitIdx = lvi2<=3?0 : lvi2===4?1 : lvi2===5?2 : 3;
+  while(unitIdx>0 && logP-DESTR[unitIdx][1]<0) unitIdx--;
+  const dx=logP-DESTR[unitIdx][1];
+  if(dx>=0){
+    st.push(unitIdx===3
+      ? "全宇宙 "+fmtNum(dx)+"個分を毎秒吹き飛ばす"
+      : DESTR[unitIdx][0]+"破壊 "+fmtNum(dx)+"回/秒");
+  }
+  if(logP<26.58) st.push("全海洋蒸発まで "+state.oceanT);
+  $('godStats').textContent=st.join("  /  ");
+  godStart=performance.now();
+  playTimeline(DOOMS.indexOf(doomNow));
+  requestAnimationFrame(godDraw);
+};
+$('godBack').onclick=()=>{
+  godActive=false;
+  god.classList.remove('show');
+  if(!reduced) requestAnimationFrame(draw);
+};
+
+update();
+if(!reduced) requestAnimationFrame(draw); else draw(performance.now());
+</script>
+</body>
+</html>
